@@ -5,27 +5,18 @@ networks:
     external: true
 
 
-    
+
 services:
   db:
-    image: postgres:15-alpine
+    image: postgres:16
     volumes:
       - ${DATA_ROOT}/db_data:/var/lib/postgresql/data
-      - ${DATA_ROOT}/initdb:/docker-entrypoint-initdb.d
-      - ${DATA_ROOT}/initdb/pg_hba.conf:/var/lib/postgresql/data/pg_hba.conf
     environment:
       POSTGRES_DB: ${WIKIJS_DB_NAME}
       POSTGRES_USER: ${WIKIJS_DB_USER}
       POSTGRES_PASSWORD: ${WIKIJS_DB_PASSWORD}
-      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=de_DE.UTF-8"
     networks:
       - wiki_js_backend
-    healthcheck:
-      test: [ "CMD", "pg_isready", "-q", "-d", "${WIKIJS_DB_NAME}", "-U", "${WIKIJS_DB_USER}" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   wiki:
     image: ghcr.io/requarks/wiki:2
@@ -61,4 +52,3 @@ services:
       - "traefik.http.routers.${STACK_NAME}_wiki.middlewares=compresstraefik"
       # Define settings for the compression middleware.
       - "traefik.http.middlewares.compresstraefik.compress=true"
-    
