@@ -5,7 +5,6 @@ networks:
     external: true
 
 
-
 services:
   db:
     image: postgres:16
@@ -30,25 +29,27 @@ services:
     networks:
       - wiki_js_backend
       - traefik
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 90s
-    labels:
-      - traefik.enable=true
-      - traefik.constraint-label=traefik-public
-      - traefik.docker.network=traefik
-      - traefik.http.routers.${STACK_NAME}_wiki.service=${STACK_NAME}_wiki
-      - traefik.http.services.${STACK_NAME}_wiki.loadbalancer.server.port=3000
-      - traefik.http.routers.${STACK_NAME}_wiki.rule=Host(`${WIKIJS_HOSTNAME}`, `www.${WIKIJS_HOSTNAME}`)
-      - traefik.http.routers.${STACK_NAME}_wiki.entrypoints=https,http,web
-      - traefik.http.routers.${STACK_NAME}_wiki.tls=true
-      - traefik.http.routers.${STACK_NAME}_wiki.tls.certresolver=le
-      # Pass the original Host header to the container.
-      - "traefik.http.services.${STACK_NAME}_wiki.loadbalancer.passhostheader=true"
-      # Apply a compression middleware.
-      - "traefik.http.routers.${STACK_NAME}_wiki.middlewares=compresstraefik"
-      # Define settings for the compression middleware.
-      - "traefik.http.middlewares.compresstraefik.compress=true"
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      labels:
+        - traefik.enable=true
+        - traefik.constraint-label=traefik-public
+        - traefik.docker.network=traefik
+        - traefik.http.routers.${STACK_NAME}_wiki.rule=Host(`${WIKIJS_HOSTNAME}`)
+        - traefik.http.routers.${STACK_NAME}_wiki.entrypoints=http,web
+        - traefik.http.routers.${STACK_NAME}_wiki-secure.rule=Host(`${WIKIJS_HOSTNAME}`)
+        - traefik.http.routers.${STACK_NAME}_wiki-secure.entrypoints=https
+        - traefik.http.routers.${STACK_NAME}_wiki-secure.tls=true
+        - traefik.http.routers.${STACK_NAME}_wiki-secure.tls.certresolver=le
+        - traefik.http.services.${STACK_NAME}_wiki.loadbalancer.server.port=3000
+        # Middleware for HTTP to HTTPS redirection
+        - traefik.http.middlewares.${STACK_NAME}_https-redirect.redirectscheme.scheme=https
+        - traefik.http.middlewares.${STACK_NAME}_https-redirect.redirectscheme.permanent=true
+        - traefik.http.routers.${STACK_NAME}_wiki.middlewares=${STACK_NAME}_https-redirect
+        # www-redir
+        - traefik.http.middlewares.${STACK_NAME}_www-redir.redirectregex.regex=^https://www.(.*)
+        - traefik.http.middlewares.${STACK_NAME}_www-redir.redirectregex.replacement=https://$${1}
+        - traefik.http.middlewares.${STACK_NAME}_www-redir.redirectregex.permanent=true
