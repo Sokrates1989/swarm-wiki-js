@@ -59,12 +59,4 @@ services:
       - "traefik.http.routers.${STACK_NAME}_wiki.middlewares=compresstraefik"
       # Define settings for the compression middleware.
       - "traefik.http.middlewares.compresstraefik.compress=true"
-      # Specify which Docker network Traefik should use for routing.
-      - "traefik.docker.network=traefik"
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      traefik:
-        condition: service_healthy
     
