@@ -1,0 +1,6 @@
+# Ignore data of wiki.
+db_data/*
+
+# Ignore config file.
+.env
+docker-compose.yml
