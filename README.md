@@ -63,6 +63,9 @@ vi docker-compose.yml
 # Deploy
 
 ```bash
+# We need a completely empty folder.
+rm db_data/.gitkeep
+
 # Deploy service on swarm using .env via docker compose.
 # https://github.com/moby/moby/issues/29133.
 docker stack deploy -c <(docker-compose config) <STACK_NAME>
@@ -103,7 +106,9 @@ docker stack rm <STACK_NAME>
 # Only, if you want to completely restart all data fresh.
 # !!! COMPLETE RESTART (old data is moved) !!!
 mv db_data/ db_data_old
+# We need an empty folder.
 git restore  db_data/.gitkeep
+rm db_data/.gitkeep
 
 # Re-deploy.
 docker stack deploy -c <(docker-compose config) <STACK_NAME>
