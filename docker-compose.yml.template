@@ -49,7 +49,7 @@ services:
       - traefik.docker.network=traefik
       - traefik.http.routers.${STACK_NAME}_wiki.service=${STACK_NAME}_wiki
       - traefik.http.services.${STACK_NAME}_wiki.loadbalancer.server.port=3000
-      - traefik.http.routers.${STACK_NAME}_wiki.rule=Host(`${WIKIJS_HOSTNAME}`)
+      - traefik.http.routers.${STACK_NAME}_wiki.rule=Host(`${WIKIJS_HOSTNAME}`, `www.${WIKIJS_HOSTNAME}`)
       - traefik.http.routers.${STACK_NAME}_wiki.entrypoints=https,http,web
       - traefik.http.routers.${STACK_NAME}_wiki.tls=true
       - traefik.http.routers.${STACK_NAME}_wiki.tls.certresolver=le
