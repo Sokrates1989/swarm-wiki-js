@@ -11,10 +11,13 @@ services:
     image: postgres:15-alpine
     volumes:
       - ${DATA_ROOT}/db_data:/var/lib/postgresql/data
+      - ${DATA_ROOT}/initdb:/docker-entrypoint-initdb.d
+      - ${DATA_ROOT}/initdb/pg_hba.conf:/var/lib/postgresql/data/pg_hba.conf
     environment:
       POSTGRES_DB: ${WIKIJS_DB_NAME}
       POSTGRES_USER: ${WIKIJS_DB_USER}
       POSTGRES_PASSWORD: ${WIKIJS_DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=de_DE.UTF-8"
     networks:
       - wiki_js_backend
     healthcheck:
