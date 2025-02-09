@@ -8,7 +8,7 @@ networks:
     
 services:
   db:
-    image: postgres:15
+    image: postgres:15-alpine
     volumes:
       - ${DATA_ROOT}/db_data:/var/lib/postgresql/data
     environment:
