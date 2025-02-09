@@ -1,6 +1,9 @@
-# Ignore data of wiki.
+# Ignore data of wiki-db.
 db_data/*
 
-# Ignore config file.
+# Keep .gitkeep files to ensure that the empty folder should be created/ exists.
+!db_data/.gitkeep
+
+# Ignore config files.
 .env
 docker-compose.yml

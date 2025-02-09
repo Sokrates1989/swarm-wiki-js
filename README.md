@@ -103,6 +103,7 @@ docker stack rm <STACK_NAME>
 # Only, if you want to completely restart all data fresh.
 # !!! COMPLETE RESTART (old data is moved) !!!
 mv db_data/ db_data_old
+git restore  db_data/.gitkeep
 
 # Re-deploy.
 docker stack deploy -c <(docker-compose config) <STACK_NAME>
