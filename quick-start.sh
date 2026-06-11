@@ -124,6 +124,191 @@ get_deployment_info() {
 }
 
 # =============================================================================
+# Backup-Restore Integration
+# =============================================================================
+
+#
+# _backup_net_attached
+# Returns 0 if backup-net is already declared as a network in docker-compose.yml.
+#
+_backup_net_attached() {
+    local compose_file="docker-compose.yml"
+    [ -f "$compose_file" ] && grep -q 'backup-net' "$compose_file"
+}
+
+#
+# _backup_net_exists_in_swarm
+# Returns 0 if the backup-net overlay network exists in Swarm.
+#
+_backup_net_exists_in_swarm() {
+    docker network inspect backup-net >/dev/null 2>&1
+}
+
+#
+# handle_backup_restore_connect
+# Attaches the Wiki.js db service to the backup-restore overlay network
+# (backup-net) so that the backup-restore service can reach the database.
+#
+# What it does:
+#   1. Verifies backup-net exists in Swarm (operator must create it first).
+#   2. Adds backup-net as an external network to docker-compose.yml.
+#   3. Adds backup-net to the db service networks list.
+#   4. Records BACKUP_RESTORE_INTEGRATION_ENABLED=true in .env.
+#   5. Prompts to redeploy the stack so the change takes effect.
+#
+handle_backup_restore_connect() {
+    local compose_file="docker-compose.yml"
+    local env_file=".env"
+
+    echo ""
+    echo "🔗 Connect Wiki.js to backup-restore network"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "This attaches the Wiki.js 'db' service to the 'backup-net' overlay"
+    echo "network so that the backup-restore service can reach PostgreSQL."
+    echo ""
+
+    if _backup_net_attached; then
+        echo "✅ backup-net is already configured in $compose_file"
+        return 0
+    fi
+
+    if ! _backup_net_exists_in_swarm; then
+        echo "❌ The 'backup-net' overlay network does not exist in Swarm."
+        echo "   Create it first from the backup-restore quick-start:"
+        echo "     Option 15 'Ensure overlay network backup-net exists'"
+        echo "   Or manually: docker network create --driver overlay --opt encrypted backup-net"
+        return 1
+    fi
+
+    if [ ! -f "$compose_file" ]; then
+        echo "❌ $compose_file not found. Deploy the stack first."
+        return 1
+    fi
+
+    echo "📝 Modifying $compose_file ..."
+    echo ""
+
+    # Append backup-net to the db service networks block.
+    # Matches the first occurrence of '    networks:' under the db service
+    # (which only has wiki_js_backend) and adds backup-net after it.
+    sed -i '/^  db:/,/^  [a-z]/ {
+        /^    networks:/ a\      - backup-net
+    }' "$compose_file"
+
+    # Append backup-net to the top-level networks section.
+    if ! grep -q 'backup-net' "$compose_file"; then
+        # Networks section already exists — append to it
+        sed -i '/^networks:/a\  backup-net:\n    external: true' "$compose_file"
+    fi
+
+    # Persist flag in .env
+    if grep -q '^BACKUP_RESTORE_INTEGRATION_ENABLED=' "$env_file" 2>/dev/null; then
+        sed -i 's/^BACKUP_RESTORE_INTEGRATION_ENABLED=.*/BACKUP_RESTORE_INTEGRATION_ENABLED=true/' "$env_file"
+    else
+        echo "" >> "$env_file"
+        echo "# Backup-Restore Integration" >> "$env_file"
+        echo "BACKUP_RESTORE_INTEGRATION_ENABLED=true" >> "$env_file"
+    fi
+
+    echo "✅ backup-net added to docker-compose.yml and .env"
+    echo ""
+    echo "Next: redeploy the stack so the db service joins backup-net."
+    echo ""
+    read_prompt "Redeploy stack now? (Y/n): " redeploy
+    if [[ ! "$redeploy" =~ ^[Nn]$ ]]; then
+        deploy_stack
+    fi
+}
+
+#
+# handle_backup_restore_status
+# Shows whether the Wiki.js db service is attached to backup-net.
+#
+handle_backup_restore_status() {
+    local compose_file="docker-compose.yml"
+    local env_file=".env"
+    local stack_name
+    stack_name=$(read_env_value "$env_file" "STACK_NAME")
+
+    echo ""
+    echo "📊 Backup-Restore Integration Status"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    # Config file check
+    if _backup_net_attached; then
+        echo "  docker-compose.yml : ✅ backup-net configured"
+    else
+        echo "  docker-compose.yml : ❌ backup-net NOT configured"
+    fi
+
+    # Swarm network check
+    if _backup_net_exists_in_swarm; then
+        echo "  backup-net (Swarm) : ✅ network exists"
+    else
+        echo "  backup-net (Swarm) : ❌ network not found"
+    fi
+
+    # Live service check
+    if [ -n "$stack_name" ]; then
+        local db_networks
+        db_networks=$(docker inspect "${stack_name}_db" --format '{{range .Spec.Networks}}{{.Target}} {{end}}' 2>/dev/null || true)
+        if echo "$db_networks" | grep -q 'backup-net'; then
+            echo "  db service         : ✅ joined backup-net"
+        else
+            echo "  db service         : ❌ not on backup-net (redeploy needed?)"
+        fi
+    fi
+
+    # .env flag
+    local flag
+    flag=$(read_env_value "$env_file" "BACKUP_RESTORE_INTEGRATION_ENABLED")
+    echo "  .env flag          : ${flag:-false}"
+    echo ""
+}
+
+#
+# handle_backup_restore_disconnect
+# Removes the backup-net attachment from docker-compose.yml and .env.
+#
+handle_backup_restore_disconnect() {
+    local compose_file="docker-compose.yml"
+    local env_file=".env"
+
+    echo ""
+    echo "🔌 Disconnect Wiki.js from backup-restore network"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    if ! _backup_net_attached; then
+        echo "ℹ️  backup-net is not configured in $compose_file — nothing to remove."
+        return 0
+    fi
+
+    read_prompt "Remove backup-net from $compose_file and .env? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    # Remove '- backup-net' line from db service networks and the top-level entry
+    sed -i '/^      - backup-net$/d' "$compose_file"
+    sed -i '/^  backup-net:/{N;/\n    external: true/d}' "$compose_file"
+
+    # Update .env flag
+    sed -i 's/^BACKUP_RESTORE_INTEGRATION_ENABLED=.*/BACKUP_RESTORE_INTEGRATION_ENABLED=false/' "$env_file"
+
+    echo "✅ backup-net removed from $compose_file and .env"
+    echo "Redeploy the stack to apply the change."
+    echo ""
+    read_prompt "Redeploy stack now? (Y/n): " redeploy
+    if [[ ! "$redeploy" =~ ^[Nn]$ ]]; then
+        deploy_stack
+    fi
+}
+
+# =============================================================================
 # Menu Functions
 # =============================================================================
 
@@ -135,20 +320,27 @@ show_maintenance_menu() {
         echo "🛠️  Wiki.js Maintenance Menu"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
-        
-        echo "1) Show deployment info"
-        echo "2) Deploy / Update stack"
-        echo "3) Show stack status"
-        echo "4) View service logs"
-        echo "5) Scale services"
-        echo "6) Edit .env file"
-        echo "7) Remove stack"
-        echo "8) Exit"
+
+        echo "Stack Management:"
+        echo "  1) Show deployment info"
+        echo "  2) Deploy / Update stack"
+        echo "  3) Show stack status"
+        echo "  4) View service logs"
+        echo "  5) Scale services"
+        echo "  6) Edit .env file"
+        echo "  7) Remove stack"
         echo ""
-        
-        read_prompt "Select option (1-8): " choice
+        echo "Backup-Restore Integration:"
+        echo "  8) Connect to backup-restore network (backup-net)"
+        echo "  9) Show backup-restore integration status"
+        echo "  10) Disconnect from backup-restore network"
         echo ""
-        
+        echo "  11) Exit"
+        echo ""
+
+        read_prompt "Select option (1-11): " choice
+        echo ""
+
         case "$choice" in
             1) get_deployment_info ;;
             2) deploy_stack ;;
@@ -157,10 +349,13 @@ show_maintenance_menu() {
             5) scale_services_menu ;;
             6) edit_env_file ;;
             7) remove_stack ;;
-            8) echo "Goodbye!"; exit 0 ;;
+            8) handle_backup_restore_connect ;;
+            9) handle_backup_restore_status ;;
+            10) handle_backup_restore_disconnect ;;
+            11) echo "Goodbye!"; exit 0 ;;
             *) echo "❌ Invalid option" ;;
         esac
-        
+
         echo ""
         read -p "Press Enter to continue..."
     done
