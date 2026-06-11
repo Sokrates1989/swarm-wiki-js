@@ -147,6 +147,105 @@ _backup_net_exists_in_swarm() {
 }
 
 #
+# _backup_restore_backup_file
+# Returns the compose backup path used before network integration changes.
+#
+_backup_restore_backup_file() {
+    echo "docker-compose.yml.backup-restore-network.bak"
+}
+
+#
+# _backup_compose_before_integration_change
+# Creates a rollback backup before mutating docker-compose.yml.
+#
+# Arguments:
+#   $1: compose file path
+_backup_compose_before_integration_change() {
+    local compose_file="$1"
+    local backup_file
+    backup_file="$(_backup_restore_backup_file)"
+
+    if [ -f "$compose_file" ]; then
+        cp "$compose_file" "$backup_file"
+        echo "📦 Backup created: $backup_file"
+    fi
+}
+
+#
+# _service_replicas_ready
+# Returns 0 when a service reports the expected replicas (for example 1/1).
+#
+# Arguments:
+#   $1: full service name
+#   $2: expected replicas string
+_service_replicas_ready() {
+    local service_name="$1"
+    local expected_replicas="$2"
+    local replicas
+
+    replicas=$(docker service ls --filter "name=${service_name}" --format '{{.Replicas}}' 2>/dev/null | head -n1)
+    [ "$replicas" = "$expected_replicas" ]
+}
+
+#
+# _show_db_failure_details
+# Prints recent db task failures and logs for troubleshooting.
+#
+# Arguments:
+#   $1: stack name
+_show_db_failure_details() {
+    local stack_name="$1"
+
+    echo ""
+    echo "❌ Wiki.js database service is not healthy."
+    echo ""
+    echo "Recent db tasks:"
+    docker service ps "${stack_name}_db" --no-trunc --format '  - {{.CurrentState}} | {{.Error}} | {{.Node}}' 2>/dev/null | head -10 || true
+    echo ""
+    echo "Recent db logs:"
+    docker service logs "${stack_name}_db" --tail 50 2>/dev/null || true
+    echo ""
+}
+
+#
+# _validate_stack_after_deploy
+# Waits for the db service to recover after a deploy and prints diagnostics if it does not.
+#
+# Arguments:
+#   $1: stack name
+#   $2: env file path
+_validate_stack_after_deploy() {
+    local stack_name="$1"
+    local env_file="$2"
+    local integration_enabled
+    local attempt=1
+    local max_attempts=12
+
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if _service_replicas_ready "${stack_name}_db" "1/1"; then
+            return 0
+        fi
+        sleep 5
+        attempt=$((attempt + 1))
+    done
+
+    _show_db_failure_details "$stack_name"
+
+    integration_enabled=$(read_env_value "$env_file" "BACKUP_RESTORE_INTEGRATION_ENABLED")
+    if [ "$integration_enabled" = "true" ] && _backup_net_attached; then
+        echo "⚠️  The failure appeared after backup-net integration was enabled."
+        echo "   Recommended immediate rollback:"
+        echo "   1) Use menu option 10 'Disconnect from backup-restore network'"
+        echo "   2) Redeploy the stack"
+        echo "   3) If needed, restore the backup file manually:"
+        echo "      cp $(_backup_restore_backup_file) docker-compose.yml"
+        echo ""
+    fi
+
+    return 1
+}
+
+#
 # handle_backup_restore_connect
 # Attaches the Wiki.js db service to the backup-restore overlay network
 # (backup-net) so that the backup-restore service can reach the database.
@@ -187,6 +286,8 @@ handle_backup_restore_connect() {
         echo "❌ $compose_file not found. Deploy the stack first."
         return 1
     fi
+
+    _backup_compose_before_integration_change "$compose_file"
 
     # Clean up any broken state from a previous failed attempt
     # (e.g. wikijs_backup-net created as internal instead of external).
@@ -327,6 +428,8 @@ handle_backup_restore_disconnect() {
         echo "ℹ️  backup-net is not configured in $compose_file — nothing to remove."
         return 0
     fi
+
+    _backup_compose_before_integration_change "$compose_file"
 
     read_prompt "Remove backup-net from $compose_file and .env? (y/N): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -518,7 +621,12 @@ deploy_stack() {
     fi
     
     echo ""
-    echo "✅ Stack deployed successfully"
+    if _validate_stack_after_deploy "$stack_name" "$env_file"; then
+        echo "✅ Stack deployed successfully"
+    else
+        echo "❌ Stack deployment completed, but the db service did not recover."
+        return 1
+    fi
     echo ""
     echo "Wiki.js will be available at:"
     local hostname
