@@ -207,26 +207,46 @@ _ensure_pgdata_subdir_in_compose() {
     echo "🔧 Ensuring PostgreSQL uses PGDATA subdirectory in $compose_file"
 
     python3 - "$compose_file" <<'PYEOF'
-import re
 import sys
 
 path = sys.argv[1]
 with open(path, encoding='utf-8') as f:
-    text = f.read()
+    lines = f.readlines()
 
-updated = re.sub(
-    r'(^  db:.*?^    environment:\n(?:^      .*\n)+)',
-    lambda m: m.group(1) + '      PGDATA: /var/lib/postgresql/data/pgdata\n',
-    text,
-    count=1,
-    flags=re.MULTILINE | re.DOTALL,
-)
+db_start = None
+env_start = None
+insert_at = None
 
-if updated == text:
-    raise SystemExit('Could not inject PGDATA into db environment block')
+for idx, line in enumerate(lines):
+    if line.startswith('  db:'):
+        db_start = idx
+        continue
+
+    if db_start is not None and idx > db_start:
+        if line.startswith('  ') and not line.startswith('    '):
+            break
+        if line.startswith('    environment:'):
+            env_start = idx
+            continue
+        if env_start is not None and idx > env_start:
+            if line.startswith('    ') and not line.startswith('      '):
+                insert_at = idx
+                break
+
+if env_start is None:
+    raise SystemExit('Could not find db environment block')
+
+if insert_at is None:
+    insert_at = len(lines)
+
+for line in lines[env_start:insert_at]:
+    if line.strip().startswith('PGDATA:'):
+        raise SystemExit(0)
+
+lines.insert(insert_at, '      PGDATA: /var/lib/postgresql/data/pgdata\n')
 
 with open(path, 'w', encoding='utf-8', newline='') as f:
-    f.write(updated)
+    f.writelines(lines)
 PYEOF
 }
 
