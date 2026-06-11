@@ -135,7 +135,7 @@ get_deployment_info() {
 #
 _backup_net_attached() {
     local compose_file="docker-compose.yml"
-    [ -f "$compose_file" ] && grep -q '^\s*backup-net:' "$compose_file"
+    [ -f "$compose_file" ] && grep -q '^[[:space:]]*backup-net:' "$compose_file"
 }
 
 #
@@ -188,6 +188,49 @@ _service_replicas_ready() {
 }
 
 #
+# _ensure_pgdata_subdir_in_compose
+# Ensures the db service uses a dedicated PGDATA subdirectory so PostgreSQL
+# does not fail when the bind mount root already contains helper files or an
+# existing pgdata subfolder.
+#
+# Arguments:
+#   $1: compose file path
+_ensure_pgdata_subdir_in_compose() {
+    local compose_file="$1"
+
+    [ ! -f "$compose_file" ] && return 0
+
+    if grep -q '^[[:space:]]*PGDATA:[[:space:]]*/var/lib/postgresql/data/pgdata' "$compose_file"; then
+        return 0
+    fi
+
+    echo "🔧 Ensuring PostgreSQL uses PGDATA subdirectory in $compose_file"
+
+    python3 - "$compose_file" <<'PYEOF'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+
+updated = re.sub(
+    r'(^  db:.*?^    environment:\n(?:^      .*\n)+)',
+    lambda m: m.group(1) + '      PGDATA: /var/lib/postgresql/data/pgdata\n',
+    text,
+    count=1,
+    flags=re.MULTILINE | re.DOTALL,
+)
+
+if updated == text:
+    raise SystemExit('Could not inject PGDATA into db environment block')
+
+with open(path, 'w', encoding='utf-8', newline='') as f:
+    f.write(updated)
+PYEOF
+}
+
+#
 # _show_db_failure_details
 # Prints recent db task failures and logs for troubleshooting.
 #
@@ -220,11 +263,15 @@ _validate_stack_after_deploy() {
     local integration_enabled
     local attempt=1
     local max_attempts=12
+    local replicas
 
     while [ "$attempt" -le "$max_attempts" ]; do
         if _service_replicas_ready "${stack_name}_db" "1/1"; then
             return 0
         fi
+        replicas=$(docker service ls --filter "name=${stack_name}_db" --format '{{.Replicas}}' 2>/dev/null | head -n1)
+        replicas="${replicas:-unknown}"
+        echo "⏳ Waiting for ${stack_name}_db to recover (attempt ${attempt}/${max_attempts}, replicas: ${replicas})..."
         sleep 5
         attempt=$((attempt + 1))
     done
@@ -587,6 +634,7 @@ setup_environment() {
 # Deploys or updates the Wiki.js stack.
 deploy_stack() {
     local env_file=".env"
+    local compose_file="docker-compose.yml"
     
     if [ ! -f "$env_file" ]; then
         echo "❌ .env file not found. Run setup first."
@@ -605,15 +653,17 @@ deploy_stack() {
     echo ""
     
     # Check if compose file exists
-    if [ -f "docker-compose.yml" ]; then
-        docker stack deploy -c <(docker-compose -f docker-compose.yml config) "$stack_name"
+    if [ -f "$compose_file" ]; then
+        _ensure_pgdata_subdir_in_compose "$compose_file"
+        docker stack deploy -c <(docker-compose -f "$compose_file" config) "$stack_name"
     elif [ -f "swarm-stack.yml" ]; then
         docker stack deploy -c swarm-stack.yml "$stack_name"
     else
         # Generate from template
         if [ -f "docker-compose.yml.template" ]; then
-            cp docker-compose.yml.template docker-compose.yml
-            docker stack deploy -c <(docker-compose -f docker-compose.yml config) "$stack_name"
+            cp docker-compose.yml.template "$compose_file"
+            _ensure_pgdata_subdir_in_compose "$compose_file"
+            docker stack deploy -c <(docker-compose -f "$compose_file" config) "$stack_name"
         else
             echo "❌ No compose file found"
             return 1
