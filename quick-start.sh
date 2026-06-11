@@ -186,21 +186,61 @@ handle_backup_restore_connect() {
         return 1
     fi
 
+    # Clean up any broken state from a previous failed attempt
+    # (e.g. wikijs_backup-net created as internal instead of external).
+    if grep -q 'backup-net' "$compose_file" 2>/dev/null && ! grep -q 'external: true' "$compose_file" 2>/dev/null; then
+        echo "⚠️  Detected incomplete backup-net entry — cleaning up first..."
+        python3 - "$compose_file" <<'CLEANUP'
+import sys, re
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+text = re.sub(r'^\s*- backup-net\n', '', text, flags=re.MULTILINE)
+text = re.sub(r'^  backup-net:\n', '', text, flags=re.MULTILINE)
+with open(path, 'w') as f:
+    f.write(text)
+CLEANUP
+        echo "   Cleaned up."
+        echo ""
+    fi
+
     echo "📝 Modifying $compose_file ..."
     echo ""
 
-    # Append backup-net to the db service networks block.
-    # Matches the first occurrence of '    networks:' under the db service
-    # (which only has wiki_js_backend) and adds backup-net after it.
-    sed -i '/^  db:/,/^  [a-z]/ {
-        /^    networks:/ a\      - backup-net
-    }' "$compose_file"
+    # Use Python for reliable multi-line edits — sed \n expansion is
+    # inconsistent across Linux distributions and macOS.
+    python3 - "$compose_file" <<'PYEOF'
+import sys, re
 
-    # Append backup-net to the top-level networks section.
-    if ! grep -q 'backup-net' "$compose_file"; then
-        # Networks section already exists — append to it
-        sed -i '/^networks:/a\  backup-net:\n    external: true' "$compose_file"
-    fi
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+# 1. Add '- backup-net' to the db service networks block (after wiki_js_backend).
+text = re.sub(
+    r'(^  db:.*?^    networks:(?:.*?\n)+?)(^  \S)',
+    lambda m: m.group(1) + '      - backup-net\n' + m.group(2),
+    text,
+    count=1,
+    flags=re.MULTILINE | re.DOTALL,
+)
+
+# 2. Add backup-net as external network to the top-level networks section
+#    if not already present.
+if 'backup-net' not in text.split('networks:',1)[0] and \
+   re.search(r'^networks:', text, re.MULTILINE):
+    text = re.sub(
+        r'(^networks:\n)',
+        r'\1  backup-net:\n    external: true\n',
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+with open(path, 'w') as f:
+    f.write(text)
+print("  Patched successfully")
+PYEOF
 
     # Persist flag in .env
     if grep -q '^BACKUP_RESTORE_INTEGRATION_ENABLED=' "$env_file" 2>/dev/null; then
@@ -292,9 +332,24 @@ handle_backup_restore_disconnect() {
         return 0
     fi
 
-    # Remove '- backup-net' line from db service networks and the top-level entry
-    sed -i '/^      - backup-net$/d' "$compose_file"
-    sed -i '/^  backup-net:/{N;/\n    external: true/d}' "$compose_file"
+    # Use Python for reliable multi-line removal.
+    python3 - "$compose_file" <<'PYEOF'
+import sys, re
+
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+# Remove '      - backup-net' line
+text = re.sub(r'^\s*- backup-net\n', '', text, flags=re.MULTILINE)
+
+# Remove top-level backup-net block (two lines: key + external: true)
+text = re.sub(r'^  backup-net:\n    external: true\n', '', text, flags=re.MULTILINE)
+
+with open(path, 'w') as f:
+    f.write(text)
+print("  Removed backup-net entries")
+PYEOF
 
     # Update .env flag
     sed -i 's/^BACKUP_RESTORE_INTEGRATION_ENABLED=.*/BACKUP_RESTORE_INTEGRATION_ENABLED=false/' "$env_file"
