@@ -129,11 +129,13 @@ get_deployment_info() {
 
 #
 # _backup_net_attached
-# Returns 0 if backup-net is already declared as a network in docker-compose.yml.
+# Returns 0 only if backup-net is declared as an external network in the
+# top-level networks section of docker-compose.yml (not just referenced
+# in a service's networks list).
 #
 _backup_net_attached() {
     local compose_file="docker-compose.yml"
-    [ -f "$compose_file" ] && grep -q 'backup-net' "$compose_file"
+    [ -f "$compose_file" ] && grep -q '^\s*backup-net:' "$compose_file"
 }
 
 #
@@ -226,8 +228,8 @@ text = re.sub(
 )
 
 # 2. Add backup-net as external network to the top-level networks section
-#    if not already present.
-if 'backup-net' not in text.split('networks:',1)[0] and \
+#    if not already present (check for the external: true declaration).
+if not re.search(r'^  backup-net:', text, re.MULTILINE) and \
    re.search(r'^networks:', text, re.MULTILINE):
     text = re.sub(
         r'(^networks:\n)',
