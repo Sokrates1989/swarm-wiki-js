@@ -51,6 +51,115 @@ read_env_value() {
     fi
 }
 
+#
+# _render_compose_config_with_env
+# Renders a Docker Compose file with only this repository's .env values.
+#
+# Docker Compose gives already-exported shell variables precedence over .env
+# values. That is dangerous when an operator reuses a shell after deploying a
+# different stack, because DATA_ROOT or STACK_NAME can silently point at another
+# service. This function starts Compose in a clean environment, loads .env
+# inside that process, and writes the rendered stack file for docker stack
+# deploy.
+#
+# Arguments:
+#   $1: compose file path to render.
+#   $2: .env file path that owns deploy-time variables.
+#   $3: output path for the rendered stack config.
+#
+# Returns:
+#   0 when the rendered stack file was written successfully; non-zero when the
+#   compose file, .env file, or Compose render step fails.
+#
+# Side effects:
+#   Writes the rendered Compose config to the output path.
+#
+_render_compose_config_with_env() {
+    local compose_file="$1"
+    local env_file="$2"
+    local output_file="$3"
+
+    if [ ! -f "$compose_file" ]; then
+        echo "❌ Compose file not found: $compose_file"
+        return 1
+    fi
+
+    if [ ! -f "$env_file" ]; then
+        echo "❌ .env file not found: $env_file"
+        return 1
+    fi
+
+    echo "🔒 Rendering $compose_file with isolated .env deploy variables"
+
+    env -i \
+        PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" \
+        HOME="${HOME:-}" \
+        TMPDIR="${TMPDIR:-/tmp}" \
+        bash -c '
+            set -e
+
+            while IFS= read -r line || [ -n "$line" ]; do
+                line="${line%$'\''\r'\''}"
+                case "$line" in
+                    ""|\#*) continue ;;
+                esac
+
+                key="${line%%=*}"
+                value="${line#*=}"
+
+                if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                    echo "Invalid .env key: $key" >&2
+                    exit 1
+                fi
+
+                if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+                    value="${value:1:${#value}-2}"
+                elif [[ "$value" == \'\''* && "$value" == *\'\'' ]]; then
+                    value="${value:1:${#value}-2}"
+                fi
+
+                export "$key=$value"
+            done < "$1"
+
+            docker-compose -f "$2" config > "$3"
+        ' _ "$env_file" "$compose_file" "$output_file"
+}
+
+#
+# _deploy_compose_stack_with_env
+# Deploys a Compose-backed stack after rendering it with isolated .env values.
+#
+# Arguments:
+#   $1: compose file path.
+#   $2: .env file path.
+#   $3: Docker Swarm stack name.
+#
+# Returns:
+#   The docker stack deploy exit code, or a non-zero render failure code.
+#
+# Side effects:
+#   Creates and removes a temporary rendered stack file.
+#
+_deploy_compose_stack_with_env() {
+    local compose_file="$1"
+    local env_file="$2"
+    local stack_name="$3"
+    local rendered_config
+    local deploy_status
+
+    rendered_config=$(mktemp)
+
+    if ! _render_compose_config_with_env "$compose_file" "$env_file" "$rendered_config"; then
+        rm -f "$rendered_config"
+        return 1
+    fi
+
+    docker stack deploy -c "$rendered_config" "$stack_name"
+    deploy_status=$?
+    rm -f "$rendered_config"
+    return "$deploy_status"
+}
+
 # =============================================================================
 # Detection Functions
 # =============================================================================
@@ -700,7 +809,7 @@ deploy_stack() {
         if ! _prepare_db_data_directory "$env_file"; then
             return 1
         fi
-        docker stack deploy -c <(docker-compose -f "$compose_file" config) "$stack_name"
+        _deploy_compose_stack_with_env "$compose_file" "$env_file" "$stack_name"
     elif [ -f "swarm-stack.yml" ]; then
         docker stack deploy -c swarm-stack.yml "$stack_name"
     else
@@ -710,7 +819,7 @@ deploy_stack() {
             if ! _prepare_db_data_directory "$env_file"; then
                 return 1
             fi
-            docker stack deploy -c <(docker-compose -f "$compose_file" config) "$stack_name"
+            _deploy_compose_stack_with_env "$compose_file" "$env_file" "$stack_name"
         else
             echo "❌ No compose file found"
             return 1

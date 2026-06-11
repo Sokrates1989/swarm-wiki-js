@@ -57,6 +57,40 @@ cp docker-compose.yml.template docker-compose.yml
 
 > **Note:** The quick-start script (`bash quick-start.sh`) automates these steps with guided prompts.
 
+## Deployment Environment Safety
+
+Docker Compose gives already-exported shell variables precedence over values in
+`.env`. If the same shell was previously used for another stack, variables such
+as `DATA_ROOT` or `STACK_NAME` can silently render this stack with paths and
+Traefik labels from that other project.
+
+Prefer the quick-start script for deploys:
+
+```bash
+bash quick-start.sh
+```
+
+The quick-start renders Compose from an isolated environment and loads deploy
+variables from this repository's `.env` file only.
+
+For manual deploys, do not run `docker-compose config` directly in a reused
+shell. Load this repository's `.env` immediately before rendering Compose, then
+inspect the rendered output before deploying:
+
+```bash
+set -a
+. ./.env
+set +a
+
+# Verify that rendered paths, hostnames, labels, and stack-specific names come
+# from this repository's .env before deploying.
+docker-compose --env-file .env -f docker-compose.yml config
+
+# Deploy only after the rendered config shows the expected DATA_ROOT,
+# STACK_NAME-derived labels, hostnames, and secrets.
+docker stack deploy -c <(docker-compose --env-file .env -f docker-compose.yml config) "$STACK_NAME"
+```
+
 
 ### Edit configuration
 ##### .env
@@ -83,9 +117,9 @@ vi docker-compose.yml
 # We need a completely empty folder.
 rm db_data/.gitkeep
 
-# Deploy service on swarm using .env via docker compose.
+# Deploy service on swarm using the isolated .env flow above.
 # https://github.com/moby/moby/issues/29133.
-docker stack deploy -c <(docker-compose config) <STACK_NAME>
+bash quick-start.sh
 # WAIT till Readiness is confirmed as described below.
 ```
 See [Determine Readiness](#determine-readiness) how to confrm readiness.
@@ -127,6 +161,6 @@ mv db_data/ db_data_old
 git restore  db_data/.gitkeep
 rm db_data/.gitkeep
 
-# Re-deploy.
-docker stack deploy -c <(docker-compose config) <STACK_NAME>
+# Re-deploy using isolated .env variables.
+bash quick-start.sh
 ```
