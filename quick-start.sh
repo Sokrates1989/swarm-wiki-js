@@ -188,66 +188,88 @@ _service_replicas_ready() {
 }
 
 #
-# _ensure_pgdata_subdir_in_compose
-# Ensures the db service uses a dedicated PGDATA subdirectory so PostgreSQL
-# does not fail when the bind mount root already contains helper files or an
-# existing pgdata subfolder.
+# _prepare_db_data_directory
+# Prepares the host PostgreSQL data directory without changing the container's
+# canonical PGDATA path.
+#
+# Fresh checkouts contain db_data/.gitkeep so Git can track the directory.
+# PostgreSQL refuses to initialize when that placeholder is present, so this
+# function removes only that known placeholder. Any other non-cluster content is
+# treated as operator-owned data and stops deployment instead of risking a fresh
+# empty database in the wrong location.
 #
 # Arguments:
-#   $1: compose file path
-_ensure_pgdata_subdir_in_compose() {
-    local compose_file="$1"
+#   $1: env file path
+_prepare_db_data_directory() {
+    local env_file="$1"
+    local data_root
+    local db_dir
+    local entries
 
-    [ ! -f "$compose_file" ] && return 0
+    data_root=$(read_env_value "$env_file" "DATA_ROOT")
+    [ -z "$data_root" ] && return 0
 
-    if grep -q '^[[:space:]]*PGDATA:[[:space:]]*/var/lib/postgresql/data/pgdata' "$compose_file"; then
+    db_dir="${data_root%/}/db_data"
+    mkdir -p "$db_dir"
+
+    if [ -f "$db_dir/PG_VERSION" ]; then
         return 0
     fi
 
-    echo "🔧 Ensuring PostgreSQL uses PGDATA subdirectory in $compose_file"
+    if [ -f "$db_dir/.gitkeep" ]; then
+        echo "🧹 Removing repository placeholder from $db_dir"
+        rm -f "$db_dir/.gitkeep"
+    fi
 
-    python3 - "$compose_file" <<'PYEOF'
-import sys
+    entries=$(find "$db_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)
+    if [ -z "$entries" ]; then
+        return 0
+    fi
 
-path = sys.argv[1]
-with open(path, encoding='utf-8') as f:
-    lines = f.readlines()
+    echo "❌ PostgreSQL data directory is not empty but is not a root PostgreSQL cluster:"
+    echo "   $db_dir"
+    echo ""
+    echo "Found:"
+    find "$db_dir" -mindepth 1 -maxdepth 1 -printf '  - %f\n' 2>/dev/null | head -20 || true
+    echo ""
+    echo "Refusing to deploy because changing PGDATA or initializing around existing"
+    echo "files can make Wiki.js connect to an empty database."
+    echo ""
+    echo "If this is the PGDATA-subdirectory regression, inspect both locations first:"
+    echo "  ls -la $db_dir"
+    echo "  ls -la $db_dir/pgdata"
+    echo ""
+    echo "Use the directory that contains the original Wiki.js tables before redeploying."
+    return 1
+}
 
-db_start = None
-env_start = None
-insert_at = None
+#
+# _remove_generated_pgdata_override_from_compose
+# Removes the exact PGDATA override that earlier quick-start versions injected
+# into docker-compose.yml.
+#
+# The deployment uses PostgreSQL's default root data directory. Keeping the
+# generated override would make existing installs continue reading from
+# db_data/pgdata, which is the regression that produced an empty Wiki.js
+# database. A backup is written before editing so operators can inspect the
+# previous compose file if needed.
+#
+# Arguments:
+#   $1: compose file path
+_remove_generated_pgdata_override_from_compose() {
+    local compose_file="$1"
+    local backup_file="${compose_file}.pgdata-override.bak"
 
-for idx, line in enumerate(lines):
-    if line.startswith('  db:'):
-        db_start = idx
-        continue
+    [ ! -f "$compose_file" ] && return 0
 
-    if db_start is not None and idx > db_start:
-        if line.startswith('  ') and not line.startswith('    '):
-            break
-        if line.startswith('    environment:'):
-            env_start = idx
-            continue
-        if env_start is not None and idx > env_start:
-            if line.startswith('    ') and not line.startswith('      '):
-                insert_at = idx
-                break
+    if ! grep -q '^[[:space:]]*PGDATA:[[:space:]]*/var/lib/postgresql/data/pgdata[[:space:]]*$' "$compose_file"; then
+        return 0
+    fi
 
-if env_start is None:
-    raise SystemExit('Could not find db environment block')
-
-if insert_at is None:
-    insert_at = len(lines)
-
-for line in lines[env_start:insert_at]:
-    if line.strip().startswith('PGDATA:'):
-        raise SystemExit(0)
-
-lines.insert(insert_at, '      PGDATA: /var/lib/postgresql/data/pgdata\n')
-
-with open(path, 'w', encoding='utf-8', newline='') as f:
-    f.writelines(lines)
-PYEOF
+    cp "$compose_file" "$backup_file"
+    echo "🩹 Removing generated PGDATA override from $compose_file"
+    echo "   Backup created: $backup_file"
+    sed -i '/^[[:space:]]*PGDATA:[[:space:]]*\/var\/lib\/postgresql\/data\/pgdata[[:space:]]*$/d' "$compose_file"
 }
 
 #
@@ -674,7 +696,10 @@ deploy_stack() {
     
     # Check if compose file exists
     if [ -f "$compose_file" ]; then
-        _ensure_pgdata_subdir_in_compose "$compose_file"
+        _remove_generated_pgdata_override_from_compose "$compose_file"
+        if ! _prepare_db_data_directory "$env_file"; then
+            return 1
+        fi
         docker stack deploy -c <(docker-compose -f "$compose_file" config) "$stack_name"
     elif [ -f "swarm-stack.yml" ]; then
         docker stack deploy -c swarm-stack.yml "$stack_name"
@@ -682,7 +707,9 @@ deploy_stack() {
         # Generate from template
         if [ -f "docker-compose.yml.template" ]; then
             cp docker-compose.yml.template "$compose_file"
-            _ensure_pgdata_subdir_in_compose "$compose_file"
+            if ! _prepare_db_data_directory "$env_file"; then
+                return 1
+            fi
             docker stack deploy -c <(docker-compose -f "$compose_file" config) "$stack_name"
         else
             echo "❌ No compose file found"
