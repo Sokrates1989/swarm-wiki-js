@@ -1,7 +1,30 @@
 # swarm-wiki-js
 Wiki JS for Docker Swarm
 
-# First Setup
+## Quick Start (Recommended)
+
+The easiest way to deploy Wiki.js with automatic detection and interactive menus:
+
+```bash
+# Clone repository
+git clone https://github.com/Sokrates1989/swarm-wiki-js.git
+cd swarm-wiki-js
+
+# Run interactive quick-start
+bash quick-start.sh
+```
+
+The quick-start will:
+- Detect existing deployments automatically
+- Show maintenance menu for existing stacks (status, logs, scale, update)
+- Guide fresh setup with interactive prompts
+- Deploy the stack with proper configuration
+
+## Manual Setup
+
+For manual deployment or advanced configuration, follow the steps below.
+
+### Prerequisites
 
 ### Domains and subdomains
 
@@ -17,9 +40,9 @@ Example for wiki.fe-wi.com:
 ##### Setup repo at desired location
 
 ```bash
-# Choose location on server (glusterfs when using multiple nodes is recommended).
-mkdir -p /gluster_storage/swarm/wiki/<DOMAINNAME>
-cd /gluster_storage/swarm/wiki/<DOMAINNAME>
+# Choose location on server.
+mkdir -p /swarm/wiki/<DOMAINNAME>
+cd /swarm/wiki/<DOMAINNAME>
 git clone https://github.com/Sokrates1989/swarm-wiki-js.git .
 ```
 
@@ -32,13 +55,7 @@ cp .env.template .env
 cp docker-compose.yml.template docker-compose.yml
 ```
 
-##### Create secrets in docker swarm (TODO adapt docker files to use secrets)
-```bash
-# XXX_CHANGE_ME_WIKIJS_DB_PASSWORD_XXX.
-vi secret.txt  # Then insert password (Make sure the password does not contain any backslashes "\") and save the file.
-docker secret create WIKIJS_DB_PASSWORD_XXXXXXXXX secret.txt # Change WIKIJS_DB_PASSWORD_XXXXXXXXX
-rm secret.txt
-```
+> **Note:** The quick-start script (`bash quick-start.sh`) automates these steps with guided prompts.
 
 
 ### Edit configuration
